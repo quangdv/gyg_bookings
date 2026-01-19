@@ -37,7 +37,7 @@ function processGYGBookings() {
     const receivedDate = new Date(y, m - 1, d);
 
     const sheet = getOrCreateDailySheet(receivedDate);
-    appendBookingRow(sheet, booking);
+    upsertBookingRowByReference(sheet, booking);
 
     thread.removeLabel(sourceLabel);
     thread.addLabel(processedLabel);
@@ -168,8 +168,59 @@ function setupSheet(sheet) {
 }
 
 /*************************************************
- * APPEND ROW
+ * UPSERT ROW (BY REFERENCE)
  *************************************************/
+function upsertBookingRowByReference(sheet, b) {
+  // If reference is missing, fall back to append (can't dedupe reliably)
+  const ref = String(b.reference || '').trim();
+  if (!ref) {
+    appendBookingRow(sheet, b);
+    return;
+  }
+
+  const existingRowIndex = findRowIndexByReference_(sheet, ref);
+  if (!existingRowIndex) {
+    appendBookingRow(sheet, b);
+    return;
+  }
+
+  // Update only fields sourced from email; keep manual fields + existing status
+  const lastCol = 23; // headers length
+  const current = sheet.getRange(existingRowIndex, 1, 1, lastCol).getValues()[0];
+
+  const rooms = calculateRooms(b.adults + b.children);
+
+  // 0-based mapping in current[]
+  current[0] = b.tour;
+  current[1] = b.customer;
+  current[2] = b.checkinDate;
+  current[3] = b.checkoutDate;
+  current[4] = b.adults;
+  current[5] = b.children;
+  current[6] = b.infant;
+
+  // Room counts (derived)
+  current[7] = rooms.double;
+  current[8] = rooms.triple;
+  current[9] = rooms.single;
+
+  // Pickup
+  current[17] = b.pickup;
+  current[18] = b.pickupTime;
+
+  // Status: keep existing if present, else set NEW
+  if (!current[19]) current[19] = STATUS_NEW;
+
+  // Contact
+  current[20] = b.email;
+  current[21] = b.phone;
+
+  // Reference
+  current[22] = ref;
+
+  sheet.getRange(existingRowIndex, 1, 1, lastCol).setValues([current]);
+}
+
 function appendBookingRow(sheet, b) {
   const rooms = calculateRooms(b.adults + b.children);
 
@@ -194,6 +245,20 @@ function appendBookingRow(sheet, b) {
   ]);
 }
 
+function findRowIndexByReference_(sheet, reference) {
+  const refCol = 23; // 1-based column index of 'Reference'
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+
+  const values = sheet.getRange(2, refCol, lastRow - 1, 1).getValues();
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][0] || '').trim() === reference) {
+      return i + 2; // actual sheet row index
+    }
+  }
+  return null;
+}
+
 /*************************************************
  * BUILD EMAIL DRAFTS (MANUAL RUN)
  *************************************************/
@@ -215,18 +280,116 @@ function buildConfirmationDrafts() {
 
         for (let i = 1; i < rows.length; i++) {
           if (rows[i][19] === STATUS_READY && rows[i][20]) {
-            GmailApp.createDraft(
-              rows[i][20],
-              `Booking Confirmation – ${rows[i][0]}`,
-              '',
-              { htmlBody: buildEmailHTML(rows[i]) }
-            );
+            const reference = String(rows[i][22] || '').trim(); // Reference column (index 22)
+            const email = rows[i][20];
+            const subject = `Booking Confirmation – ${rows[i][0]}`;
+            const htmlBody = buildEmailHTML(rows[i]);
+
+            // Try to find original email by reference and reply to it
+            const originalMessage = findOriginalEmailByReference(reference);
+            if (originalMessage) {
+              try {
+                // Create draft reply - this automatically sets up reply headers
+                const draft = originalMessage.createDraftReply('', {
+                  htmlBody: htmlBody
+                });
+
+                // Verify draft was created and log details
+                const draftId = draft.getId();
+                const threadId = originalMessage.getThread().getId();
+                Logger.log(`✅ Created reply draft for reference: ${reference}`);
+                Logger.log(`   Draft ID: ${draftId}, Thread ID: ${threadId}`);
+                Logger.log(`   Original subject: ${originalMessage.getSubject()}`);
+
+                // Force save by accessing draft properties (ensures it's saved)
+                const draftSubject = draft.getMessage().getSubject();
+                Logger.log(`   Draft subject: ${draftSubject}`);
+
+              } catch (e) {
+                Logger.log(`❌ Error creating reply draft for reference: ${reference}`);
+                Logger.log(`   Error: ${e.toString()}`);
+                // Fallback: create new draft if reply fails
+                GmailApp.createDraft(
+                  email,
+                  subject,
+                  '',
+                  { htmlBody: htmlBody }
+                );
+                Logger.log(`⚠️ Fallback: created new draft for reference: ${reference}`);
+              }
+            } else {
+              // Fallback: create new draft if original email not found
+              GmailApp.createDraft(
+                email,
+                subject,
+                '',
+                { htmlBody: htmlBody }
+              );
+              Logger.log(`⚠️ Original email not found for reference: ${reference}, created new draft`);
+            }
+
             sheet.getRange(i+1, 20).setValue(STATUS_DRAFTED);
           }
         }
       }
     }
   }
+}
+
+/*************************************************
+ * FIND ORIGINAL EMAIL BY REFERENCE
+ *************************************************/
+function findOriginalEmailByReference(reference) {
+  if (!reference) return null;
+
+  // Limit search to processed booking emails for better performance
+  const labelQuery = `label:${SOURCE_LABEL} OR label:${PROCESSED_LABEL}`;
+
+  // First: Search in subject (faster and more reliable)
+  // Reference can be at end: "Booking - S68147 - GYGVN3HW223V" or just "GYGVN3HW223V"
+  const subjectQuery = `${labelQuery} subject:"${reference}"`;
+  let threads = GmailApp.search(subjectQuery, 0, 20);
+
+  for (let thread of threads) {
+    const messages = thread.getMessages();
+    // Get the first message in thread (original email)
+    if (messages.length > 0) {
+      const msg = messages[0];
+      const subject = msg.getSubject();
+      // Check if reference appears in subject
+      if (subject.includes(reference)) {
+        return msg;
+      }
+    }
+  }
+
+  // Second: If not found in subject, search in body content
+  // Look for "Reference number GYGVN3HW223V" or "Reference number: GYGVN3HW223V"
+  const bodyQuery = `${labelQuery} "Reference number ${reference}"`;
+  threads = GmailApp.search(bodyQuery, 0, 20);
+
+  for (let thread of threads) {
+    const messages = thread.getMessages();
+    // Get the first message in thread (original email)
+    if (messages.length > 0) {
+      const msg = messages[0];
+      const body = msg.getBody();
+      const text = body
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n')
+        .replace(/<[^>]+>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      // Verify reference appears in content
+      const refPattern = new RegExp(`Reference number\\s*:?\\s*${reference.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i');
+      if (refPattern.test(text)) {
+        return msg;
+      }
+    }
+  }
+
+  return null;
 }
 
 /*************************************************
