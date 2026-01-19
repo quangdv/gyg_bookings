@@ -1,10 +1,19 @@
-/******************** CONFIG ********************/
+/*************************************************
+ * CONFIG
+ *************************************************/
 const ROOT_FOLDER_ID = '1bv4A4wUX757bTALr9FbIns90O7iRc3p1';
 const SOURCE_LABEL = 'GYG_BOOKING';
 const PROCESSED_LABEL = 'GYG_BOOKING_READ';
 const TIMEZONE = 'Asia/Ho_Chi_Minh';
 
-/******************** MAIN ********************/
+// Status (EN)
+const STATUS_NEW = 'NEW';
+const STATUS_READY = 'READY_TO_CONFIRM';
+const STATUS_DRAFTED = 'CONFIRMATION_DRAFTED';
+
+/*************************************************
+ * MAIN – PARSE BOOKING EMAIL
+ *************************************************/
 function processGYGBookings() {
   const sourceLabel = getOrCreateLabel(SOURCE_LABEL);
   const processedLabel = getOrCreateLabel(PROCESSED_LABEL);
@@ -13,10 +22,9 @@ function processGYGBookings() {
   Logger.log('Found threads: ' + threads.length);
 
   threads.forEach(thread => {
-    const messages = thread.getMessages();
-    const msg = messages[messages.length - 1];
-
+    const msg = thread.getMessages().pop();
     const booking = parseGYGBooking(msg);
+
     if (!booking) {
       Logger.log('Skip email: cannot parse booking');
       return;
@@ -30,22 +38,24 @@ function processGYGBookings() {
   });
 }
 
-/******************** PARSER ********************/
+/*************************************************
+ * PARSER – GETYOURGUIDE EMAIL
+ *************************************************/
 function parseGYGBooking(message) {
   if (!message) return null;
 
-  const body = message.getBody();
-  const text = body.replace(/<[^>]+>/g, '\n').replace(/\s+/g, ' ').trim();
+  const html = message.getBody();
+  const text = html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 
-  // Fixed regex to prevent duplicate tour names - stop at first occurrence
-  const tourMatch = text.match(/Your offer has been booked:\s*([^]*?)\s*(?:Reference number|Date)/i);
+  // TOUR (only first occurrence)
+  const tourMatch = text.match(/Your offer has been booked:\s*(.*?)\s*Reference number/i);
   if (!tourMatch) return null;
-
-  // Extract tour name and clean it up
-  let tour = tourMatch[1].trim();
-
-  // Remove duplicate tour names - detect if tour name is repeated
-  // Split the tour text and check if it contains the same pattern twice
+  let tour = tourMatch[1].trim().replace(/&amp;/g, '&');
   const tourLength = tour.length;
   if (tourLength > 20) {
     // Check if the second half starts with the first half (indicating duplication)
@@ -62,24 +72,36 @@ function parseGYGBooking(message) {
     }
   }
 
-  // Replace &amp; with &
-  tour = tour.replace(/&amp;/g, '&');
-
+  // DATE
   const dateMatch = text.match(/Date\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})/);
   const checkinDate = dateMatch ? new Date(dateMatch[1]) : null;
+  if (!(checkinDate instanceof Date) || isNaN(checkinDate)) return null;
 
+  // CUSTOMER
   const customerMatch = text.match(/Main customer\s*([A-Za-z\s]+)/i);
   const customer = customerMatch ? customerMatch[1].trim() : '';
 
-  const guestMatch = text.match(/(\d+)\s*x\s*Adults?/i);
-  const adults = guestMatch ? Number(guestMatch[1]) : 0;
+  // EMAIL
+  const emailMatch = text.match(/([a-z0-9._%+-]+@reply\.getyourguide\.com)/i);
+  const email = emailMatch ? emailMatch[1] : '';
 
+  // PHONE
+  const phoneMatch = text.match(/Phone:\s*([+\d\s]+)/i);
+  const phone = phoneMatch ? phoneMatch[1].trim() : '';
+
+  // ADULT
+  const adultMatch = text.match(/(\d+)\s*x\s*Adults?/i);
+  const adults = adultMatch ? Number(adultMatch[1]) : 0;
+
+  // PICKUP
   const pickupMatch = text.match(/Pickup\s*(.*?)\s*(Open in Google Maps|Price)/i);
-  const pickup = pickupMatch ? pickupMatch[1].trim() : '';
+  const pickup = pickupMatch ? pickupMatch[1].trim().replace(/&amp;/g, '&') : '';
 
   return {
     tour,
     customer,
+    email,
+    phone,
     checkinDate,
     checkoutDate: addDays(checkinDate, 1),
     adults,
@@ -90,18 +112,19 @@ function parseGYGBooking(message) {
   };
 }
 
-/******************** SHEET ********************/
+/*************************************************
+ * SHEET
+ *************************************************/
 function getOrCreateDailySheet(dateObj) {
-  const safeDate = dateObj instanceof Date && !isNaN(dateObj) ? dateObj : new Date();
-  const year = safeDate.getFullYear();
-  const month = String(safeDate.getMonth() + 1).padStart(2, '0');
-  const dateStr = Utilities.formatDate(safeDate, TIMEZONE, 'yyyy-MM-dd');
-
   const root = DriveApp.getFolderById(ROOT_FOLDER_ID);
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const dateStr = Utilities.formatDate(dateObj, TIMEZONE, 'yyyy-MM-dd');
+
   const yearFolder = getOrCreateFolder(root, year);
   const monthFolder = getOrCreateFolder(yearFolder, month);
 
-  const fileName = `GetYourGuide_Bookings_${dateStr}`;
+  const fileName = `GYG_Bookings_${dateStr}`;
   const files = monthFolder.getFilesByName(fileName);
 
   let ss;
@@ -112,7 +135,6 @@ function getOrCreateDailySheet(dateObj) {
     DriveApp.getFileById(ss.getId()).moveTo(monthFolder);
     setupSheet(ss.getActiveSheet());
   }
-
   return ss.getActiveSheet();
 }
 
@@ -121,19 +143,22 @@ function setupSheet(sheet) {
     'Tour','Customer Name','Checkin','Checkout',
     'Adult','Children','Infant',
     'Double/Twin','Triple','Single',
-    'Peak season','Bus','VAT','Holiday','Other','Cruise',
-    'Pickup','Pickup time','Status'
+    'Peak season','Bus','Single Cabin','VAT','Holiday','Other','Cruise',
+    'Pickup','Pickup time',
+    'Status','Email','Phone'
   ];
   sheet.getRange(1,1,1,headers.length).setValues([headers]);
 
   const rule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['Chờ xử lý','Chờ gửi email confirmation','Đã gửi email confirm'], true)
+    .requireValueInList([STATUS_NEW, STATUS_READY, STATUS_DRAFTED], true)
     .build();
 
-  sheet.getRange('S2:S').setDataValidation(rule);
+  sheet.getRange('T2:T').setDataValidation(rule);
 }
 
-/******************** APPEND ********************/
+/*************************************************
+ * APPEND ROW
+ *************************************************/
 function appendBookingRow(sheet, b) {
   const rooms = calculateRooms(b.adults + b.children);
 
@@ -148,14 +173,173 @@ function appendBookingRow(sheet, b) {
     rooms.double,
     rooms.triple,
     rooms.single,
-    '', '', '', '', '', '',
+    '', '', '', '', '', '', '',
     b.pickup,
     b.pickupTime,
-    'Chờ xử lý'
+    STATUS_NEW,
+    b.email,
+    b.phone
   ]);
 }
 
-/******************** HELPERS ********************/
+/*************************************************
+ * BUILD EMAIL DRAFTS (MANUAL RUN)
+ *************************************************/
+function buildConfirmationDrafts() {
+  const root = DriveApp.getFolderById(ROOT_FOLDER_ID);
+
+  const years = root.getFolders();
+  while (years.hasNext()) {
+    const y = years.next();
+    const months = y.getFolders();
+
+    while (months.hasNext()) {
+      const m = months.next();
+      const files = m.getFilesByType(MimeType.GOOGLE_SHEETS);
+
+      while (files.hasNext()) {
+        const sheet = SpreadsheetApp.open(files.next()).getActiveSheet();
+        const rows = sheet.getDataRange().getValues();
+
+        for (let i = 1; i < rows.length; i++) {
+          if (rows[i][19] === STATUS_READY && rows[i][20]) {
+            GmailApp.createDraft(
+              rows[i][20],
+              `Booking Confirmation – ${rows[i][0]}`,
+              '',
+              { htmlBody: buildEmailHTML(rows[i]) }
+            );
+            sheet.getRange(i+1, 20).setValue(STATUS_DRAFTED);
+          }
+        }
+      }
+    }
+  }
+}
+
+/*************************************************
+ * EMAIL HTML (TABLE – GMAIL SAFE)
+ *************************************************/
+function buildEmailHTML(r) {
+  /*
+    Column mapping (theo sheet của bạn):
+    0  Tour
+    1  Customer name
+    2  Checkin
+    3  Checkout
+    4  Adult
+    5  Children
+    6  Infant
+    7  Double/Twin
+    8  Triple
+    9  Single
+    10 Peak season
+    11 Bus
+    12 Single Cabin
+    13 VAT
+    14 Holiday
+    15 Other
+    16 Cruise
+    17 Pickup
+    18 Pickup time
+    19 Status
+    20 Email
+    21 Phone
+  */
+
+  const fmtDate = d =>
+    d instanceof Date
+      ? Utilities.formatDate(d, TIMEZONE, 'dd-MMM-yy')
+      : d;
+
+  const rooms = [];
+  if (r[7]) rooms.push(`${r[7]} Double/ Twin`);
+  if (r[8]) rooms.push(`${r[8]} Triple`);
+  if (r[9]) rooms.push(`${r[9]} Single`);
+
+  const surcharges = [
+    ['Peak season from 1 Oct to 30 Apr $13/person', r[10]],
+    ['Single Cabin 80 USD', r[12]],
+    ['Limousine Bus 2 way HN <--> HL $25/person', r[11]],
+    ['The Government VAT Tax 12 USD/person', r[13]],
+    ['Holiday', r[14]],
+    ['Other', r[15]],
+  ].filter(x => Number(x[1]) > 0);
+
+  const total = surcharges.reduce((s, x) => s + Number(x[1]), 0);
+
+  return `
+<table border="0" cellpadding="0" cellspacing="0" width="725"
+ style="border-collapse:collapse;font-family:'Times New Roman';font-size:11pt;color:#000">
+
+<tr>
+  <td colspan="3" style="padding-bottom:12px">
+    Dear ${r[1]},<br><br>
+    Thank you for booking with us.<br>
+    I would like to confirm your booking as follows:
+  </td>
+</tr>
+
+${row('Tour code', r[0])}
+${row('Guest name', r[1])}
+${row('Number of guest', `${r[4]} x Adults`)}
+${row('Check-in date', fmtDate(r[2]))}
+${row('Check out date', fmtDate(r[3]))}
+${row('Room', rooms.join(' / '))}
+${row('Pick up/Drop off address', r[17])}
+${row('Pick up time', r[18])}
+
+<tr>
+  <td rowspan="${surcharges.length + 1}"
+      style="border:1px solid #000;text-align:center;vertical-align:middle">
+    Surcharge (USD)
+  </td>
+  <td style="border:1px solid #000">${surcharges[0][0]}</td>
+  <td style="border:1px solid #000;text-align:right">$ ${surcharges[0][1]}</td>
+</tr>
+
+${surcharges.slice(1).map(x => `
+<tr>
+  <td style="border:1px solid #000">${x[0]}</td>
+  <td style="border:1px solid #000;text-align:right">$ ${x[1]}</td>
+</tr>`).join('')}
+
+<tr>
+  <td style="border:1px solid #000;font-weight:bold">Total</td>
+  <td style="border:1px solid #000;text-align:right;font-weight:bold">$ ${total}</td>
+</tr>
+
+<tr><td colspan="3" style="height:15px"></td></tr>
+
+<tr>
+<td colspan="3">
+<b>Note:</b><br>
+- About the surcharge, cash is recommended. Card payments will incur a 3–10% bank commission fee.<br>
+- Do you have any food allergies or are you vegetarian?<br>
+- Please provide details of passport information of all guests before check-in cruise.<br>
+- Pick up & drop off point can be Hanoi Old Quarter or Ninh Binh.<br>
+- Estimated pickup time: 8:00–8:30 AM (Hanoi), 7:00–7:15 AM (Ninh Binh).<br>
+- Please reply to this email to confirm you received the information.<br>
+- Please give us your Whatsapp number or personal email so we can contact you easily.
+</td>
+</tr>
+
+</table>
+`;
+}
+
+function row(label, value) {
+  return `
+<tr>
+  <td style="border:1px solid #000;width:180px">${label}</td>
+  <td colspan="2" style="border:1px solid #000;text-align:center">${value || ''}</td>
+</tr>`;
+}
+
+
+/*************************************************
+ * HELPERS
+ *************************************************/
 function calculateRooms(x) {
   if (x <= 0) return { double:0, triple:0, single:0 };
   if (x === 1) return { double:0, triple:0, single:1 };
@@ -165,11 +349,14 @@ function calculateRooms(x) {
   return { double:(x-3)/2, triple:1, single:0 };
 }
 
-function addDays(d, days) {
-  if (!(d instanceof Date)) return '';
+function addDays(d, n) {
   const r = new Date(d);
-  r.setDate(r.getDate() + days);
+  r.setDate(r.getDate() + n);
   return r;
+}
+
+function formatDate(d) {
+  return Utilities.formatDate(d, TIMEZONE, 'dd-MMM-yyyy');
 }
 
 function getOrCreateLabel(name) {
@@ -177,6 +364,42 @@ function getOrCreateLabel(name) {
 }
 
 function getOrCreateFolder(parent, name) {
-  const folders = parent.getFoldersByName(String(name));
-  return folders.hasNext() ? folders.next() : parent.createFolder(String(name));
+  const f = parent.getFoldersByName(String(name));
+  return f.hasNext() ? f.next() : parent.createFolder(String(name));
 }
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('Booking')
+    .addItem('Create confirmation drafts', 'buildConfirmationDrafts')
+    .addToUi();
+}
+
+
+function createConfirmationDraftFromRow(sheet, row) {
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const data = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+
+  const colIndex = name => headers.indexOf(name);
+
+  const email = data[colIndex('Email')];
+  const statusIndex = colIndex('Status');
+
+  if (!email) {
+    Logger.log('❌ No email, skip row ' + row);
+    return;
+  }
+
+  const subject = `Booking Confirmation – ${data[colIndex('Tour')]}`;
+  const htmlBody = buildEmailHTML(data);
+
+  GmailApp.createDraft(email, subject, '', {
+    htmlBody: htmlBody
+  });
+
+  // Update status sau khi tạo draft
+  sheet.getRange(row, statusIndex + 1).setValue('DRAFT_CREATED');
+
+  Logger.log(`✅ Draft created for row ${row}`);
+}
+
