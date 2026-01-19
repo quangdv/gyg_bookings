@@ -30,7 +30,13 @@ function processGYGBookings() {
       return;
     }
 
-    const sheet = getOrCreateDailySheet(booking.checkinDate);
+    // Create 1 daily sheet per email received date (cut by TIMEZONE)
+    const receivedAt = msg.getDate();
+    const receivedYmd = Utilities.formatDate(receivedAt, TIMEZONE, 'yyyy-MM-dd');
+    const [y, m, d] = receivedYmd.split('-').map(Number);
+    const receivedDate = new Date(y, m - 1, d);
+
+    const sheet = getOrCreateDailySheet(receivedDate);
     appendBookingRow(sheet, booking);
 
     thread.removeLabel(sourceLabel);
@@ -97,6 +103,10 @@ function parseGYGBooking(message) {
   const pickupMatch = text.match(/Pickup\s*(.*?)\s*(Open in Google Maps|Price)/i);
   const pickup = pickupMatch ? pickupMatch[1].trim().replace(/&amp;/g, '&') : '';
 
+  // REFERENCE
+  const referenceMatch = text.match(/Reference number\s*:?\s*([A-Z0-9\-]+?)(?=Date|$)/i);
+  const reference = referenceMatch ? referenceMatch[1].trim() : '';
+
   return {
     tour,
     customer,
@@ -108,7 +118,8 @@ function parseGYGBooking(message) {
     children: 0,
     infant: 0,
     pickup,
-    pickupTime: '8:00 to 8:30 AM'
+    pickupTime: '8:00 to 8:30 AM',
+    reference
   };
 }
 
@@ -145,7 +156,7 @@ function setupSheet(sheet) {
     'Double/Twin','Triple','Single',
     'Peak season','Bus','Single Cabin','VAT','Holiday','Other','Cruise',
     'Pickup','Pickup time',
-    'Status','Email','Phone'
+    'Status','Email','Phone','Reference'
   ];
   sheet.getRange(1,1,1,headers.length).setValues([headers]);
 
@@ -178,7 +189,8 @@ function appendBookingRow(sheet, b) {
     b.pickupTime,
     STATUS_NEW,
     b.email,
-    b.phone
+    b.phone,
+    b.reference
   ]);
 }
 
