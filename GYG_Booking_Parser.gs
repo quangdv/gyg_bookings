@@ -488,14 +488,7 @@ ${surcharges.slice(1).map(x => `
 
 <tr>
 <td colspan="3">
-<b>Note:</b><br>
-- About the surcharge, cash is recommended. Card payments will incur a 3–10% bank commission fee.<br>
-- Do you have any food allergies or are you vegetarian?<br>
-- Please provide details of passport information of all guests before check-in cruise.<br>
-- Pick up & drop off point can be Hanoi Old Quarter or Ninh Binh.<br>
-- Estimated pickup time: 8:00–8:30 AM (Hanoi), 7:00–7:15 AM (Ninh Binh).<br>
-- Please reply to this email to confirm you received the information.<br>
-- Please give us your Whatsapp number or personal email so we can contact you easily.
+${getNoteContent()}
 </td>
 </tr>
 
@@ -509,6 +502,45 @@ function row(label, value) {
   <td style="border:1px solid #000;width:180px">${label}</td>
   <td colspan="2" style="border:1px solid #000;text-align:center">${value || ''}</td>
 </tr>`;
+}
+
+/*************************************************
+ * GET NOTE CONTENT FROM FILE
+ *************************************************/
+function getNoteContent() {
+  try {
+    // Try to read from HTML template file (note.html)
+    // In Google Apps Script, create a file named "note.html" in the same project
+    const noteContent = HtmlService.createTemplateFromFile('note').getRawContent();
+    if (noteContent && noteContent.trim()) {
+      return noteContent;
+    }
+  } catch (e) {
+    Logger.log('Note file not found, using default note content. Error: ' + e.toString());
+  }
+
+  // Fallback to default note content if file not found
+  // OLD NOTE CONTENT (commented out - now reading from note.html file):
+  /*
+  <b>Note:</b><br>
+  - About the surcharge, cash is recommended. Card payments will incur a 3–10% bank commission fee.<br>
+  - Do you have any food allergies or are you vegetarian?<br>
+  - Please provide details of passport information of all guests before check-in cruise.<br>
+  - Pick up & drop off point can be Hanoi Old Quarter or Ninh Binh.<br>
+  - Estimated pickup time: 8:00–8:30 AM (Hanoi), 7:00–7:15 AM (Ninh Binh).<br>
+  - Please reply to this email to confirm you received the information.<br>
+  - Please give us your Whatsapp number or personal email so we can contact you easily.
+  */
+
+  // Return default content as fallback
+  return `<b>Note:</b><br>
+- About the surcharge, cash is recommended. Card payments will incur a 3–10% bank commission fee.<br>
+- Do you have any food allergies or are you vegetarian?<br>
+- Please provide details of passport information of all guests before check-in cruise.<br>
+- Pick up & drop off point can be Hanoi Old Quarter or Ninh Binh.<br>
+- Estimated pickup time: 8:00–8:30 AM (Hanoi), 7:00–7:15 AM (Ninh Binh).<br>
+- Please reply to this email to confirm you received the information.<br>
+- Please give us your Whatsapp number or personal email so we can contact you easily.`;
 }
 
 
