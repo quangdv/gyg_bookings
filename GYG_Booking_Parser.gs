@@ -141,6 +141,8 @@ function getOrCreateDailySheet(dateObj) {
   let ss;
   if (files.hasNext()) {
     ss = SpreadsheetApp.open(files.next());
+    // Ensure formatting rules exist for already-created sheets
+    applyStatusRowColorRules_(ss.getActiveSheet());
   } else {
     ss = SpreadsheetApp.create(fileName);
     DriveApp.getFileById(ss.getId()).moveTo(monthFolder);
@@ -165,6 +167,40 @@ function setupSheet(sheet) {
     .build();
 
   sheet.getRange('T2:T').setDataValidation(rule);
+
+  applyStatusRowColorRules_(sheet);
+}
+
+function applyStatusRowColorRules_(sheet) {
+  const dataRange = sheet.getRange('A2:W'); // 23 columns (A..W), exclude header row
+
+  // Remove old rules for these exact formulas (avoid duplicates)
+  const existing = sheet.getConditionalFormatRules();
+  const kept = existing.filter(r => {
+    const cond = r.getBooleanCondition && r.getBooleanCondition();
+    if (!cond) return true;
+    if (cond.getCriteriaType() !== SpreadsheetApp.BooleanCriteria.CUSTOM_FORMULA) return true;
+    const v = cond.getCriteriaValues();
+    const f = v && v[0];
+    return !(
+      f === '=$T2="READY_TO_CONFIRM"' ||
+      f === '=$T2="CONFIRMATION_DRAFTED"'
+    );
+  });
+
+  const readyRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$T2="READY_TO_CONFIRM"')
+    .setBackground('#D9EAD3')
+    .setRanges([dataRange])
+    .build();
+
+  const draftedRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$T2="CONFIRMATION_DRAFTED"')
+    .setBackground('#B6D7A8')
+    .setRanges([dataRange])
+    .build();
+
+  sheet.setConditionalFormatRules([...kept, readyRule, draftedRule]);
 }
 
 /*************************************************
