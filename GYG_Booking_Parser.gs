@@ -84,8 +84,11 @@ function parseGYGBooking(message) {
   if (!(checkinDate instanceof Date) || isNaN(checkinDate)) return null;
 
   // CUSTOMER
-  const customerMatch = text.match(/Main customer\s*([A-Za-z\s]+)/i);
-  const customer = customerMatch ? customerMatch[1].trim() : '';
+  // Use \p{L} to match any Unicode letter (including ü, ö, é, ñ, etc.)
+  const customerMatch = text.match(/Main customer\s*([\p{L}\s]+)/iu);
+  let customer = customerMatch ? customerMatch[1].trim() : '';
+  // Remove "customer" word if present (at beginning or end)
+  customer = customer.replace(/^customer\s*|\s*customer$/gi, '').trim();
 
   // EMAIL
   const emailMatch = text.match(/([a-z0-9._%+-]+@reply\.getyourguide\.com)/i);
@@ -98,6 +101,14 @@ function parseGYGBooking(message) {
   // ADULT
   const adultMatch = text.match(/(\d+)\s*x\s*Adults?/i);
   const adults = adultMatch ? Number(adultMatch[1]) : 0;
+
+  // CHILDREN
+  const childrenMatch = text.match(/(\d+)\s*x\s*Child(?:ren)?/i);
+  const children = childrenMatch ? Number(childrenMatch[1]) : 0;
+
+  // INFANT
+  const infantMatch = text.match(/(\d+)\s*x\s*Infants?/i);
+  const infant = infantMatch ? Number(infantMatch[1]) : 0;
 
   // PICKUP
   const pickupMatch = text.match(/Pickup\s*(.*?)\s*(Open in Google Maps|Price)/i);
@@ -115,8 +126,8 @@ function parseGYGBooking(message) {
     checkinDate,
     checkoutDate: addDays(checkinDate, 1),
     adults,
-    children: 0,
-    infant: 0,
+    children,
+    infant,
     pickup,
     pickupTime: '8:00 to 8:30 AM',
     reference
@@ -260,25 +271,33 @@ function upsertBookingRowByReference(sheet, b) {
 function appendBookingRow(sheet, b) {
   const rooms = calculateRooms(b.adults + b.children);
 
-  sheet.appendRow([
-    b.tour,
-    b.customer,
-    b.checkinDate,
-    b.checkoutDate,
-    b.adults,
-    b.children,
-    b.infant,
-    rooms.double,
-    rooms.triple,
-    rooms.single,
-    '', '', '', '', '', '', '',
-    b.pickup,
-    b.pickupTime,
-    STATUS_NEW,
-    b.email,
-    b.phone,
-    b.reference
-  ]);
+  // Build row data with explicit column mapping
+  const rowData = [
+    b.tour,           // Col A (0): Tour
+    b.customer,       // Col B (1): Customer Name
+    b.checkinDate,    // Col C (2): Checkin
+    b.checkoutDate,   // Col D (3): Checkout
+    b.adults,         // Col E (4): Adult
+    b.children,       // Col F (5): Children
+    b.infant,         // Col G (6): Infant
+    rooms.double,     // Col H (7): Double/Twin
+    rooms.triple,     // Col I (8): Triple
+    rooms.single,     // Col J (9): Single
+    '',               // Col K (10): Peak season
+    '',               // Col L (11): Bus
+    '',               // Col M (12): Single Cabin
+    '',               // Col N (13): VAT
+    '',               // Col O (14): Holiday
+    '',               // Col P (15): Other
+    '',               // Col Q (16): Cruise
+    b.pickup,         // Col R (17): Pickup
+    b.pickupTime,     // Col S (18): Pickup time
+    STATUS_NEW,       // Col T (19): Status
+    b.email,          // Col U (20): Email
+    b.phone,          // Col V (21): Phone
+    b.reference       // Col W (22): Reference
+  ];
+  sheet.appendRow(rowData);
 }
 
 function findRowIndexByReference_(sheet, reference) {
@@ -497,7 +516,7 @@ ${row('Number of guest', `${r[4]} x Adults`)}
 ${row('Check-in date', fmtDate(r[2]))}
 ${row('Check out date', fmtDate(r[3]))}
 ${row('Room', rooms.join(' / '))}
-${row('Pick up/Drop off address', r[17])}
+${row('Pick up/Drop off address', r[17] || 'Please provide')}
 ${row('Pick up time', r[18])}
 
 <tr>
