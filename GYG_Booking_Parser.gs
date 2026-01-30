@@ -482,10 +482,14 @@ function buildEmailHTML(r) {
       ? Utilities.formatDate(d, TIMEZONE, 'dd-MMM-yy')
       : d;
 
+  const tourName = String(r[0] || '');
+  const roomSuffix = tourName.toLowerCase().indexOf('bai tu long') !== -1
+    ? 'Delux Window Cabin'
+    : 'Private Balcony';
   const rooms = [];
-  if (r[7]) rooms.push(`${r[7]} Double/ Twin`);
-  if (r[8]) rooms.push(`${r[8]} Triple`);
-  if (r[9]) rooms.push(`${r[9]} Single`);
+  if (r[7]) rooms.push(`${r[7]} Double/ Twin - ${roomSuffix}`);
+  if (r[8]) rooms.push(`${r[8]} Triple - ${roomSuffix}`);
+  if (r[9]) rooms.push(`${r[9]} Single - ${roomSuffix}`);
 
   const surcharges = [
     ['Peak season from 1 Oct to 30 Apr $13/person', r[10]],
@@ -497,6 +501,7 @@ function buildEmailHTML(r) {
   ].filter(x => Number(x[1]) > 0);
 
   const total = surcharges.reduce((s, x) => s + Number(x[1]), 0);
+  const sig = getDefaultGmailSignature();
 
   return `
 <table border="0" cellpadding="0" cellspacing="0" width="725"
@@ -548,6 +553,7 @@ ${getNoteContent()}
 </tr>
 
 </table>
+${sig ? '<div style="margin-top:15px">' + sig + '</div>' : ''}
 `;
 }
 
@@ -557,6 +563,23 @@ function row(label, value) {
   <td style="border:1px solid #000;width:180px">${label}</td>
   <td colspan="2" style="border:1px solid #000;text-align:center">${value || ''}</td>
 </tr>`;
+}
+
+/*************************************************
+ * GET DEFAULT GMAIL SIGNATURE
+ *************************************************/
+function getDefaultGmailSignature() {
+  try {
+    const list = Gmail.Users.Settings.SendAs.list('me');
+    if (!list.sendAs || !list.sendAs.length) return '';
+    const defaultSendAs = list.sendAs.find(function (account) {
+      return account.isDefault;
+    });
+    return (defaultSendAs && defaultSendAs.signature) ? defaultSendAs.signature : '';
+  } catch (e) {
+    Logger.log('Could not get default Gmail signature: ' + e.toString());
+    return '';
+  }
 }
 
 /*************************************************
