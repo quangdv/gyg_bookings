@@ -22,7 +22,8 @@ function processGYGBookings() {
   Logger.log('Found threads: ' + threads.length);
 
   threads.forEach(thread => {
-    const msg = thread.getMessages().pop();
+    const messages = thread.getMessages();
+    const msg = messages.pop();
     const booking = parseGYGBooking(msg);
 
     if (!booking) {
@@ -30,8 +31,9 @@ function processGYGBookings() {
       return;
     }
 
-    // Create 1 daily sheet per email received date (cut by TIMEZONE)
-    const receivedAt = msg.getDate();
+    // Create 1 daily sheet per original email received date (first message in thread, not latest)
+    const firstMsg = messages.length > 0 ? messages[0] : msg;
+    const receivedAt = firstMsg.getDate();
     const receivedYmd = Utilities.formatDate(receivedAt, TIMEZONE, 'yyyy-MM-dd');
     const [y, m, d] = receivedYmd.split('-').map(Number);
     const receivedDate = new Date(y, m - 1, d);
